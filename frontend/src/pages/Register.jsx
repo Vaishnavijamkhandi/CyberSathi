@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useStore from "../store/useStore";
 
@@ -6,8 +6,14 @@ export default function Register() {
   const [form, setForm] = useState({ full_name: "", email: "", phone: "", password: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const { register } = useStore();
+  const { register, isAuthenticated } = useStore();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate("/dashboard", { replace: true });
+    }
+  }, [isAuthenticated, navigate]);
 
   const onChange = (field) => (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }));
 

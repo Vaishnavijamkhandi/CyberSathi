@@ -70,18 +70,18 @@ async def startup():
     # Create database tables
     try:
         await create_tables()
-        logger.info("✓ Database tables created/verified")
+        logger.info("[OK] Database tables created/verified")
     except Exception as e:
         logger.warning(f"Database connection warning on startup: {e}")
 
     # Ensure upload directory exists
     Path(settings.UPLOAD_DIR).mkdir(exist_ok=True)
-    logger.info(f"✓ Upload directory ready: {settings.UPLOAD_DIR}")
+    logger.info(f"[OK] Upload directory ready: {settings.UPLOAD_DIR}")
 
     # Pre-load ML models
     from app.ml.classifier import get_classifier
     classifier = get_classifier()
-    logger.info("✓ Crime classifier ready")
+    logger.info("[OK] Crime classifier ready")
 
 
 @app.on_event("shutdown")

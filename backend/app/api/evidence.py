@@ -12,10 +12,12 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.config import settings
 from app.models.user import User
-from app.models.complaint import Complaint
+from app.models.complaint import Complaint, ChatMessage
 from app.models.evidence import EvidenceFile
 from app.ml.ocr_processor import process_file
 from app.ml.ner_extractor import merge_entities
+from app.services.complaint_gen import generate_complaint
+from app.services.timeline_gen import build_timeline
 
 router = APIRouter(prefix="/api/evidence", tags=["Evidence"])
 
@@ -107,17 +109,64 @@ async def upload_evidence(
         ocr_result.get("entities", {}),
     )
     complaint.extracted_entities = merged
+
+    # Load all evidence files for this complaint to regenerate timeline and complaint draft
+    ef_result = await db.execute(
+        select(EvidenceFile).where(EvidenceFile.complaint_id == complaint_id)
+    )
+    all_evidence = ef_result.scalars().all()
+
+    # Load chat messages for timeline context
+    msg_result = await db.execute(
+        select(ChatMessage).where(ChatMessage.complaint_id == complaint_id).order_by(ChatMessage.id)
+    )
+    all_msgs = msg_result.scalars().all()
+    msg_dicts = [
+        {"role": m.role, "content": m.content, "extracted_entities": m.extracted_entities or {}}
+        for m in all_msgs
+    ]
+
+    new_timeline = build_timeline(msg_dicts, all_evidence, merged)
+    complaint.timeline = new_timeline
+
+    new_complaint_text = generate_complaint(
+        user=current_user,
+        complaint_data={
+            "crime_category": complaint.crime_category or "Cybercrime",
+            "crime_category_confidence": complaint.crime_category_confidence or 0.8,
+            "crime_indicators": complaint.crime_indicators or [],
+            "risk_level": complaint.risk_level or "MEDIUM",
+            "financial_loss": complaint.financial_loss,
+            "payment_method": complaint.payment_method or (merged.get("payment_apps", [None])[0] if merged.get("payment_apps") else "UPI / Digital"),
+            "incident_description": complaint.incident_description,
+            "incident_date": complaint.incident_date,
+        },
+        entities=merged,
+        timeline=new_timeline,
+        evidence_files=all_evidence,
+        incident_description=complaint.incident_description,
+    )
+    complaint.complaint_text = new_complaint_text
     db.add(complaint)
 
+    extracted_txt = (ocr_result.get("ocr_text") or "")[:500]
+
     return {
+        "id": evidence_record.id,
         "evidence_id": evidence_record.id,
         "filename": file.filename,
+        "file_type": evidence_record.file_type,
         "document_type": evidence_record.document_type,
-        "ocr_text": (ocr_result.get("ocr_text") or "")[:500],  # Preview
+        "ocr_text": extracted_txt,
+        "extracted_text": extracted_txt,
         "entities": ocr_result.get("entities", {}),
+        "detected_entities": ocr_result.get("entities", {}),
         "confidence": ocr_result.get("confidence"),
         "method": ocr_result.get("method", "unknown"),
         "processing_error": processing_error,
+        "complaint_text": new_complaint_text,
+        "timeline": new_timeline,
+        "merged_entities": merged,
     }
 
 

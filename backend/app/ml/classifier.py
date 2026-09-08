@@ -57,21 +57,27 @@ CRIME_CATEGORIES = [
 # Keyword-based indicators for XAI explanation
 CATEGORY_INDICATORS = {
     "UPI / Payment Fraud": ["upi", "qr code", "gpay", "phonepe", "payment request", "scan", "transfer", "wrong transfer"],
-    "Banking Fraud": ["bank account", "debit card", "credit card", "atm", "sim swap", "net banking", "ifsc", "account hacked"],
+    "Banking Fraud": ["bank account", "debit card", "credit card", "atm", "sim swap", "net banking", "ifsc"],
     "OTP / Social Engineering": ["otp", "one time password", "verification code", "share otp", "bank executive", "kyc", "remote access"],
-    "Phishing": ["link", "fake website", "clicked link", "login page", "entered credentials", "email", "sms link", "url"],
-    "Job / Employment Fraud": ["job offer", "registration fee", "work from home", "data entry", "offer letter", "security deposit", "employment", "internship", "intern", "part time", "tasks", "task"],
-    "Investment Fraud": ["investment", "returns", "trading", "profit", "withdraw", "scheme", "mutual fund", "stock market", "telegram group"],
-    "E-commerce Fraud": ["ordered", "purchased", "delivery", "product", "seller", "online shopping", "not delivered", "flipkart", "amazon", "olx"],
-    "Social Media Fraud": ["whatsapp", "friend asked", "facebook", "instagram", "telegram", "social media", "dating", "matrimonial"],
-    "Account Compromise": ["account hacked", "password changed", "lost access", "locked out", "unauthorized login", "hacker"],
+    "Phishing": ["fake website", "clicked link", "login page", "entered credentials", "email link", "sms link", "phishing url", "spoofed site", "phishing"],
+    "Job / Employment Fraud": ["job offer", "registration fee", "work from home", "data entry", "offer letter", "security deposit", "employment", "internship", "intern", "part time", "tasks", "task fraud", "linkedin job", "telegram task"],
+    "Investment Fraud": ["investment", "returns", "trading", "profit", "withdraw", "scheme", "mutual fund", "stock market", "telegram group", "crypto investment"],
+    "E-commerce Fraud": ["ordered", "purchased", "delivery", "product", "seller", "online shopping", "not delivered", "flipkart", "amazon", "olx", "courier"],
+    "Social Media Fraud": ["whatsapp", "friend asked", "facebook", "instagram", "telegram", "social media", "dating", "matrimonial", "snapchat", "fake friend"],
+    "Account Compromise": ["account hacked", "password changed", "lost access", "locked out", "unauthorized login", "hacker", "hacked", "account compromised", "hijacked", "account takeover", "compromised", "stolen account", "hacked my", "someone hacked"],
     "Identity Theft": ["aadhaar", "pan card", "identity misused", "loan in my name", "credit card opened", "kyc misused"],
     "Impersonation": ["fake profile", "my photos", "fake account", "my name", "impersonating", "duplicate profile"],
-    "Cyber Extortion": ["threatening", "blackmail", "pay or", "video", "photos shared", "extortion", "demand money"],
-    "Malware / Ransomware": ["virus", "malware", "ransomware", "files encrypted", "remote access", "apk", "download", "hacked device"],
-    "Cryptocurrency Fraud": ["bitcoin", "crypto", "usdt", "cryptocurrency", "ethereum", "wallet", "blockchain", "coin"],
+    "Cyber Extortion": ["threatening", "blackmail", "pay or", "video", "photos shared", "extortion", "demand money", "nude", "sextortion"],
+    "Malware / Ransomware": ["virus", "malware", "ransomware", "files encrypted", "remote access app", "apk", "downloaded app", "hacked device", "trojan"],
+    "Cryptocurrency Fraud": ["bitcoin", "crypto", "usdt", "cryptocurrency", "ethereum", "crypto wallet", "blockchain", "binance"],
     "Other / Unknown": [],
 }
+
+
+def _match_keyword(kw: str, text_lower: str) -> bool:
+    """Match keyword using whole-word regex boundaries so 'link' doesn't match 'linkedin'."""
+    pattern = r"(?:\b|_)" + re.escape(kw) + r"(?:\b|_)"
+    return bool(re.search(pattern, text_lower))
 
 
 # ─── Text Preprocessing ────────────────────────────────────────────────────────
@@ -191,19 +197,21 @@ class CrimeClassifier:
             if model_path.exists() and le_path.exists():
                 self.model = joblib.load(model_path)
                 self.le = joblib.load(le_path)
-                print(f"✓ Loaded classifier: {self.model_name}")
+                print(f"[OK] Loaded classifier: {self.model_name}")
             else:
                 print(f"Model not found at {model_path}. Using keyword fallback.")
         except Exception as e:
             print(f"Failed to load model: {e}. Using keyword fallback.")
 
     def _keyword_fallback(self, text: str) -> Tuple[str, float, List[str]]:
-        """Simple keyword-based fallback classifier."""
+        """Keyword-based fallback classifier with word boundary matching."""
         text_lower = text.lower()
         scores = {}
+        matched_indicators = {}
         for category, keywords in CATEGORY_INDICATORS.items():
-            score = sum(1 for kw in keywords if kw in text_lower)
-            scores[category] = score
+            matches = [kw for kw in keywords if _match_keyword(kw, text_lower)]
+            scores[category] = len(matches)
+            matched_indicators[category] = matches
 
         best_cat = max(scores, key=scores.get)
         best_score = scores[best_cat]
@@ -212,26 +220,25 @@ class CrimeClassifier:
             best_cat = "Other / Unknown"
             confidence = 0.3
         else:
-            total = sum(scores.values())
-            confidence = min(best_score / max(total, 1) + 0.3, 0.95)
+            confidence = min(0.55 + (best_score * 0.15), 0.95)
 
-        indicators = [kw for kw in CATEGORY_INDICATORS.get(best_cat, []) if kw in text_lower]
+        indicators = matched_indicators.get(best_cat, [])
         return best_cat, round(confidence, 2), indicators[:5]
 
     def predict(self, text: str) -> Dict:
         """
-        Classify a cybercrime complaint text.
-
-        Returns:
-            dict with: category, confidence, indicators, method
+        Classify a cybercrime complaint text with robust hybrid ML + high-precision rule guards.
         """
         indicators = self._get_indicators(text)
+        kw_cat, kw_conf, kw_indicators = self._keyword_fallback(text)
+
+        ml_category = None
+        ml_confidence = 0.0
+        alternatives = []
 
         if self.model is not None and self.le is not None:
             try:
                 processed = preprocess_text(text)
-
-                # Get probability scores if supported
                 clf = self.model.named_steps["clf"]
                 tfidf_vec = self.model.named_steps["tfidf"]
                 X = tfidf_vec.transform([processed])
@@ -239,48 +246,75 @@ class CrimeClassifier:
                 if hasattr(clf, "predict_proba"):
                     proba = clf.predict_proba(X)[0]
                     top_idx = np.argmax(proba)
-                    confidence = float(proba[top_idx])
-                    category = self.le.inverse_transform([top_idx])[0]
+                    ml_confidence = float(proba[top_idx])
+                    ml_category = str(self.le.inverse_transform([top_idx])[0])
 
-                    # Top 3 categories
                     top3_idx = np.argsort(proba)[::-1][:3]
                     alternatives = [
-                        {"category": self.le.inverse_transform([i])[0], "confidence": round(float(proba[i]), 3)}
+                        {"category": str(self.le.inverse_transform([i])[0]), "confidence": round(float(proba[i]), 3)}
                         for i in top3_idx
                     ]
                 else:
                     pred = clf.predict(X)[0]
-                    category = self.le.inverse_transform([pred])[0]
-                    confidence = 0.80
-                    alternatives = [{"category": category, "confidence": confidence}]
-
-                return {
-                    "category": category,
-                    "confidence": round(confidence, 3),
-                    "indicators": indicators,
-                    "alternatives": alternatives,
-                    "method": f"ML ({self.model_name})",
-                }
+                    ml_category = str(self.le.inverse_transform([pred])[0])
+                    ml_confidence = 0.80
+                    alternatives = [{"category": ml_category, "confidence": ml_confidence}]
             except Exception as e:
                 print(f"Model prediction failed: {e}, using fallback")
 
-        # Keyword fallback
-        category, confidence, kw_indicators = self._keyword_fallback(text)
+        # Hybrid Decision Logic:
+        # If keyword fallback matched strong specific indicators (e.g. 'hacked', 'linkedin', 'upi', 'otp'),
+        # and ML is either unavailable, has low confidence (< 0.35), or ML has 0 indicators in the text while keyword has matches:
+        text_lower = text.lower()
+        ml_has_indicators = any(
+            _match_keyword(kw, text_lower)
+            for kw in CATEGORY_INDICATORS.get(ml_category or "", [])
+        )
+
+        use_keyword = False
+        if kw_indicators:
+            if not ml_category:
+                use_keyword = True
+            elif ml_confidence < 0.35:
+                # ML is uncertain / guessing among diffused classes
+                use_keyword = True
+            elif not ml_has_indicators and len(kw_indicators) >= 1:
+                # ML predicted category has zero matching indicators, but kw_cat has direct matches
+                use_keyword = True
+
+        if use_keyword and kw_cat != "Other / Unknown":
+            category = kw_cat
+            confidence = kw_conf
+            chosen_indicators = kw_indicators
+            method = "Rules/Keywords (High Confidence)"
+            if not any(a.get("category") == category for a in alternatives):
+                alternatives.insert(0, {"category": category, "confidence": confidence})
+        elif ml_category:
+            category = ml_category
+            confidence = round(ml_confidence, 3)
+            chosen_indicators = indicators
+            method = f"ML ({self.model_name})"
+        else:
+            category = kw_cat
+            confidence = kw_conf
+            chosen_indicators = kw_indicators or indicators
+            method = "keyword_fallback"
+
         return {
             "category": category,
             "confidence": confidence,
-            "indicators": kw_indicators or indicators,
-            "alternatives": [{"category": category, "confidence": confidence}],
-            "method": "keyword_fallback",
+            "indicators": chosen_indicators,
+            "alternatives": alternatives or [{"category": category, "confidence": confidence}],
+            "method": method,
         }
 
     def _get_indicators(self, text: str) -> List[str]:
-        """Extract present indicators from text for XAI explanation."""
+        """Extract present indicators from text for XAI explanation using word boundary matching."""
         text_lower = text.lower()
         found = []
         for category, keywords in CATEGORY_INDICATORS.items():
             for kw in keywords:
-                if kw in text_lower and kw not in found:
+                if _match_keyword(kw, text_lower) and kw not in found:
                     found.append(kw)
         return found[:8]  # Return top 8
 

@@ -42,26 +42,48 @@ async def get_comparison():
     else:
         results = _format_results(results)
 
-    models_data = results.get("models", {})
+    models_data = results.get("models", [])
     metrics = []
     best_model = "SVM (Linear)"
     best_acc = 0.0
 
-    for name, data in models_data.items():
-        acc = data.get("accuracy", 0.0)
-        prec = data.get("precision", data.get("macro_avg", {}).get("precision", acc * 0.95))
-        rec = data.get("recall", data.get("macro_avg", {}).get("recall", acc))
-        f1 = data.get("f1_score", data.get("macro_avg", {}).get("f1-score", acc * 0.92))
-        metrics.append({
-            "model_name": name,
-            "accuracy": round(acc, 4),
-            "precision": round(prec, 4),
-            "recall": round(rec, 4),
-            "f1_score": round(f1, 4),
-        })
-        if acc > best_acc:
-            best_acc = acc
-            best_model = name
+    def normalize_val(v):
+        val = float(v) if v is not None else 0.0
+        return val / 100.0 if val > 1.0 else val
+
+    if isinstance(models_data, list):
+        for item in models_data:
+            name = item.get("model", "")
+            acc = normalize_val(item.get("accuracy", 0.0))
+            prec = normalize_val(item.get("precision", acc * 0.95))
+            rec = normalize_val(item.get("recall", acc))
+            f1 = normalize_val(item.get("f1_score", acc * 0.92))
+            metrics.append({
+                "model_name": name,
+                "accuracy": round(acc, 4),
+                "precision": round(prec, 4),
+                "recall": round(rec, 4),
+                "f1_score": round(f1, 4),
+            })
+            if acc > best_acc:
+                best_acc = acc
+                best_model = name
+    elif isinstance(models_data, dict):
+        for name, data in models_data.items():
+            acc = normalize_val(data.get("accuracy", 0.0))
+            prec = normalize_val(data.get("precision", data.get("macro_avg", {}).get("precision", acc * 0.95)))
+            rec = normalize_val(data.get("recall", data.get("macro_avg", {}).get("recall", acc)))
+            f1 = normalize_val(data.get("f1_score", data.get("macro_avg", {}).get("f1-score", acc * 0.92)))
+            metrics.append({
+                "model_name": name,
+                "accuracy": round(acc, 4),
+                "precision": round(prec, 4),
+                "recall": round(rec, 4),
+                "f1_score": round(f1, 4),
+            })
+            if acc > best_acc:
+                best_acc = acc
+                best_model = name
 
     # Default fallback if metrics array empty
     if not metrics:

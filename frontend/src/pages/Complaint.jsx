@@ -23,7 +23,12 @@ export default function ComplaintDraft() {
 
   useEffect(() => {
     if (complaintId) {
-      fetchComplaint(complaintId);
+      fetchComplaint(complaintId).then(() => {
+        const c = useStore.getState().complaintText;
+        if (!c) {
+          reanalyze(complaintId).catch(() => {});
+        }
+      });
     }
   }, [complaintId]);
 
@@ -63,10 +68,10 @@ export default function ComplaintDraft() {
     try {
       // Ensure complaint is generated first if not already
       try {
-        await client.post('/complaints/generate', { complaint_id: complaintId });
+        await client.post('/complaint/generate', { complaint_id: complaintId });
       } catch (e) {}
 
-      const response = await client.get(`/complaints/${complaintId}/pdf`, { responseType: "blob" });
+      const response = await client.get(`/complaint/${complaintId}/pdf`, { responseType: "blob" });
       const url = window.URL.createObjectURL(new Blob([response.data], { type: "application/pdf" }));
       const link = document.createElement("a");
       link.href = url;

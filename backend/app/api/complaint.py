@@ -139,16 +139,51 @@ async def download_pdf(
     if not complaint:
         raise HTTPException(status_code=404, detail="Complaint not found.")
 
-    if not complaint.complaint_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Complaint has not been generated yet. Call /generate first.",
-        )
-
     ef_result = await db.execute(
         select(EvidenceFile).where(EvidenceFile.complaint_id == complaint_id)
     )
     evidence_files = ef_result.scalars().all()
+
+    if not complaint.complaint_text:
+        msg_result = await db.execute(
+            select(ChatMessage).where(ChatMessage.complaint_id == complaint_id).order_by(ChatMessage.id)
+        )
+        messages = msg_result.scalars().all()
+        msg_dicts = [
+            {"role": m.role, "content": m.content, "extracted_entities": m.extracted_entities or {}}
+            for m in messages
+        ]
+        timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {})
+        complaint.timeline = timeline
+
+        gemini = get_gemini_service()
+        user_text = " ".join(m.content for m in messages if m.role == "user")
+        desc = gemini.generate_complaint_description({
+            "crime_category": complaint.crime_category,
+            "financial_loss": complaint.financial_loss,
+            "extracted_entities": complaint.extracted_entities,
+            "risk_level": complaint.risk_level,
+        }, user_text)
+        complaint.incident_description = desc
+        complaint.complaint_text = generate_complaint(
+            user=current_user,
+            complaint_data={
+                "crime_category": complaint.crime_category or "Cybercrime",
+                "crime_category_confidence": complaint.crime_category_confidence or 0.0,
+                "crime_indicators": complaint.crime_indicators or [],
+                "risk_level": complaint.risk_level or "MEDIUM",
+                "financial_loss": complaint.financial_loss,
+                "payment_method": complaint.payment_method,
+                "incident_description": desc,
+                "incident_date": complaint.incident_date,
+            },
+            entities=complaint.extracted_entities or {},
+            timeline=timeline,
+            evidence_files=evidence_files,
+            incident_description=desc,
+        )
+        db.add(complaint)
+        await db.flush()
 
     pdf_bytes = generate_complaint_pdf(
         user=current_user,
@@ -226,6 +261,48 @@ async def get_complaint(
         select(EvidenceFile).where(EvidenceFile.complaint_id == complaint_id)
     )
     evidence_files = ef_result.scalars().all()
+
+    if not complaint.complaint_text:
+        msg_result = await db.execute(
+            select(ChatMessage).where(ChatMessage.complaint_id == complaint_id).order_by(ChatMessage.id)
+        )
+        messages = msg_result.scalars().all()
+        user_msgs = [m for m in messages if m.role == "user"]
+        if user_msgs:
+            msg_dicts = [
+                {"role": m.role, "content": m.content, "extracted_entities": m.extracted_entities or {}}
+                for m in messages
+            ]
+            timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {})
+            complaint.timeline = timeline
+            gemini = get_gemini_service()
+            user_text = " ".join(m.content for m in user_msgs)
+            desc = gemini.generate_complaint_description({
+                "crime_category": complaint.crime_category,
+                "financial_loss": complaint.financial_loss,
+                "extracted_entities": complaint.extracted_entities,
+                "risk_level": complaint.risk_level,
+            }, user_text)
+            complaint.incident_description = desc
+            complaint.complaint_text = generate_complaint(
+                user=current_user,
+                complaint_data={
+                    "crime_category": complaint.crime_category or "Cybercrime",
+                    "crime_category_confidence": complaint.crime_category_confidence or 0.0,
+                    "crime_indicators": complaint.crime_indicators or [],
+                    "risk_level": complaint.risk_level or "MEDIUM",
+                    "financial_loss": complaint.financial_loss,
+                    "payment_method": complaint.payment_method,
+                    "incident_description": desc,
+                    "incident_date": complaint.incident_date,
+                },
+                entities=complaint.extracted_entities or {},
+                timeline=timeline,
+                evidence_files=evidence_files,
+                incident_description=desc,
+            )
+            db.add(complaint)
+            await db.flush()
 
     return {
         "id": complaint.id,

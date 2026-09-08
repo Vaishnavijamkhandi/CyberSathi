@@ -1,8 +1,18 @@
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import useStore from '../store/useStore';
 
 export default function Navbar() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { user, isAuthenticated, logout } = useStore();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const displayName = user?.full_name || user?.email?.split('@')[0] || 'User';
 
   return (
     <nav style={{
@@ -14,14 +24,14 @@ export default function Navbar() {
       backdropFilter: 'blur(16px)',
       borderBottom: '1px solid rgba(59, 130, 246, 0.15)',
       zIndex: 50,
-      padding: '0 32px',
+      padding: '0 24px',
       height: '64px',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
     }}>
       {/* Brand Logo */}
-      <Link to="/" style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', color: 'inherit' }}>
+      <Link to={isAuthenticated ? "/dashboard" : "/"} style={{ display: 'flex', alignItems: 'center', gap: '10px', textDecoration: 'none', color: 'inherit' }}>
         <div style={{
           width: 36,
           height: 36,
@@ -45,8 +55,43 @@ export default function Navbar() {
         </div>
       </Link>
 
-      {/* Center / Helpline */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+      {/* Center Navigation / Helpline */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+        {isAuthenticated && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Link
+              to="/dashboard"
+              style={{
+                fontSize: '0.85rem',
+                fontWeight: 500,
+                color: location.pathname === '/dashboard' ? '#f59e0b' : '#94a3b8',
+                textDecoration: 'none',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                background: location.pathname === '/dashboard' ? 'rgba(245, 158, 11, 0.1)' : 'transparent',
+                transition: 'color 0.15s ease',
+              }}
+            >
+              Cases
+            </Link>
+            <Link
+              to="/ml-dashboard"
+              style={{
+                fontSize: '0.85rem',
+                fontWeight: 500,
+                color: location.pathname === '/ml-dashboard' ? '#f59e0b' : '#94a3b8',
+                textDecoration: 'none',
+                padding: '6px 12px',
+                borderRadius: '6px',
+                background: location.pathname === '/ml-dashboard' ? 'rgba(245, 158, 11, 0.1)' : 'transparent',
+                transition: 'color 0.15s ease',
+              }}
+            >
+              ML Models
+            </Link>
+          </div>
+        )}
+
         <div style={{
           display: 'inline-flex',
           alignItems: 'center',
@@ -65,20 +110,64 @@ export default function Navbar() {
 
       {/* Actions */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <button
-          className="btn btn-ghost"
-          onClick={() => navigate('/auth')}
-          style={{ fontSize: '0.85rem', padding: '6px 16px' }}
-        >
-          Sign In
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={() => navigate('/auth')}
-          style={{ fontSize: '0.85rem', padding: '6px 18px' }}
-        >
-          Get Started →
-        </button>
+        {isAuthenticated ? (
+          <>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '4px 10px',
+              borderRadius: '6px',
+              background: 'rgba(15, 23, 42, 0.6)',
+              border: '1px solid rgba(59, 130, 246, 0.2)',
+              fontSize: '0.82rem',
+              color: '#cbd5e1',
+            }}>
+              <span style={{
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                background: '#f59e0b',
+                color: '#020817',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontWeight: 700,
+                fontSize: '0.75rem',
+              }}>
+                {displayName.charAt(0).toUpperCase()}
+              </span>
+              <span>{displayName}</span>
+            </div>
+            <button
+              className="btn btn-ghost"
+              onClick={handleLogout}
+              id="nav-logout-btn"
+              style={{ fontSize: '0.82rem', padding: '6px 14px', color: '#94a3b8' }}
+            >
+              Sign Out
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className="btn btn-ghost"
+              onClick={() => navigate('/login')}
+              id="nav-signin-btn"
+              style={{ fontSize: '0.85rem', padding: '6px 16px' }}
+            >
+              Sign In
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => navigate('/register')}
+              id="nav-getstarted-btn"
+              style={{ fontSize: '0.85rem', padding: '6px 18px' }}
+            >
+              Get Started →
+            </button>
+          </>
+        )}
       </div>
     </nav>
   );

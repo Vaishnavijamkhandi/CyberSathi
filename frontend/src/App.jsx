@@ -1,5 +1,5 @@
-import React from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import React, { useEffect } from "react";
+import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import CaseWorkspace from "./pages/CaseWorkspace";
 import Chat from "./pages/Chat";
@@ -10,6 +10,39 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import MLDashboard from "./pages/MLDashboard";
 import Register from "./pages/Register";
+import useComplaintStore from "./store/complaintStore";
+import useStore from "./store/useStore";
+
+function ChatRedirect() {
+  const activeComplaintId = useStore((s) => s.activeComplaintId);
+  const { createComplaint } = useComplaintStore();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (activeComplaintId) {
+      navigate(`/case/${activeComplaintId}/chat`, { replace: true });
+    } else {
+      createComplaint()
+        .then((complaint) => {
+          if (complaint?.id) {
+            navigate(`/case/${complaint.id}/chat`, { replace: true });
+          } else {
+            navigate("/dashboard", { replace: true });
+          }
+        })
+        .catch(() => {
+          navigate("/dashboard", { replace: true });
+        });
+    }
+  }, [activeComplaintId, createComplaint, navigate]);
+
+  return (
+    <div style={{ minHeight: "100vh", backgroundColor: "#020817", display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8" }}>
+      <div className="spinner" style={{ marginRight: "12px" }} />
+      <span>Loading case workspace...</span>
+    </div>
+  );
+}
 
 export default function App() {
   return (
@@ -57,6 +90,15 @@ export default function App() {
         <Route path="evidence" element={<Evidence />} />
         <Route path="complaint" element={<ComplaintDraft />} />
       </Route>
+
+      <Route
+        path="/chat"
+        element={
+          <ProtectedRoute>
+            <ChatRedirect />
+          </ProtectedRoute>
+        }
+      />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

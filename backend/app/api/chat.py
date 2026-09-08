@@ -13,6 +13,10 @@ from app.ml.classifier import get_classifier
 from app.ml.risk_scorer import calculate_risk, RiskInput
 from app.services.gemini_service import get_gemini_service
 
+from app.models.evidence import EvidenceFile
+from app.services.complaint_gen import generate_complaint
+from app.services.timeline_gen import build_timeline
+
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
 
 
@@ -31,6 +35,10 @@ class ChatResponse(BaseModel):
     risk: Dict[str, Any]
     missing_info: List[str]
     evidence_checklist: List[str]
+    complaint_text: Optional[str] = None
+    incident_description: Optional[str] = None
+    timeline: Optional[List[Dict[str, Any]]] = None
+    title: Optional[str] = None
 
 
 class StartComplaintResponse(BaseModel):
@@ -166,6 +174,7 @@ async def send_message(
         "financial_loss": financial_loss if financial_loss > 0 else None,
         "risk_level": risk_result.level,
         "missing_info": [],
+        "extracted_entities": merged_entities,
     }
 
     bot_reply = gemini.chat(
@@ -203,7 +212,60 @@ async def send_message(
     )
     db.add(bot_msg)
 
-    # 12. Update complaint with latest analysis
+    # 12. Load evidence files
+    ef_result = await db.execute(
+        select(EvidenceFile).where(EvidenceFile.complaint_id == complaint.id)
+    )
+    evidence_files = ef_result.scalars().all()
+
+    # 13. Build real-time incident timeline
+    timeline_messages = [
+        {"role": msg.role, "content": msg.content, "extracted_entities": msg.extracted_entities or {}}
+        for msg in all_messages
+    ]
+    timeline_messages.append({"role": "user", "content": data.message, "extracted_entities": new_entities})
+    timeline_messages.append({"role": "assistant", "content": bot_reply, "extracted_entities": {}})
+
+    timeline = build_timeline(timeline_messages, evidence_files, merged_entities)
+    complaint.timeline = timeline
+
+    # 14. Generate real-time incident description
+    incident_data = {
+        "crime_category": classification.get("category"),
+        "financial_loss": financial_loss if financial_loss > 0 else complaint.financial_loss,
+        "extracted_entities": merged_entities,
+        "risk_level": risk_result.level,
+    }
+    incident_desc = gemini.generate_complaint_description(incident_data, user_messages_text)
+    complaint.incident_description = incident_desc
+
+    # 15. Generate full 10-section formal complaint draft
+    complaint_text = generate_complaint(
+        user=current_user,
+        complaint_data={
+            "crime_category": classification.get("category", "Cybercrime"),
+            "crime_category_confidence": classification.get("confidence", 0.0),
+            "crime_indicators": classification.get("indicators", []),
+            "risk_level": risk_result.level,
+            "financial_loss": financial_loss if financial_loss > 0 else complaint.financial_loss,
+            "payment_method": complaint.payment_method or (merged_entities.get("payment_apps", [None])[0] if merged_entities.get("payment_apps") else "UPI / Digital"),
+            "incident_description": incident_desc,
+            "incident_date": complaint.incident_date,
+        },
+        entities=merged_entities,
+        timeline=timeline,
+        evidence_files=evidence_files,
+        incident_description=incident_desc,
+    )
+    complaint.complaint_text = complaint_text
+
+    # Auto-generate meaningful case title
+    if not complaint.title or complaint.title.startswith("Untitled") or complaint.title.startswith("Case #"):
+        cat_name = classification.get("category") or "Cybercrime"
+        loss_text = f" — ₹{financial_loss:,.0f}" if financial_loss > 0 else ""
+        complaint.title = f"{cat_name}{loss_text}"
+
+    # 16. Update complaint with latest analysis
     complaint.extracted_entities = merged_entities
     complaint.crime_category = classification.get("category")
     complaint.crime_category_confidence = classification.get("confidence", 0.0)
@@ -235,6 +297,10 @@ async def send_message(
         },
         missing_info=missing_info,
         evidence_checklist=evidence_checklist,
+        complaint_text=complaint_text,
+        incident_description=incident_desc,
+        timeline=timeline,
+        title=complaint.title,
     )
 
 

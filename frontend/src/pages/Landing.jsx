@@ -1,6 +1,7 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import Navbar from "../components/Navbar";
+import useStore from "../store/useStore";
 
 const STEPS = [
   {
@@ -32,6 +33,8 @@ const CATEGORIES = [
 ];
 
 export default function Landing() {
+  const isAuthenticated = useStore((s) => s.isAuthenticated);
+
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#020817", color: "#f1f5f9" }}>
       <Navbar />
@@ -119,8 +122,9 @@ export default function Landing() {
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
               <Link
-                to="/auth"
+                to={isAuthenticated ? "/dashboard" : "/register"}
                 className="btn btn-primary"
+                id="landing-start-case-btn"
                 style={{
                   background: "#f59e0b",
                   borderColor: "#f59e0b",
@@ -132,7 +136,7 @@ export default function Landing() {
                   display: "inline-block",
                 }}
               >
-                Start your case
+                {isAuthenticated ? "Go to your cases →" : "Start your case"}
               </Link>
               <a
                 href="https://cybercrime.gov.in"

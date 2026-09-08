@@ -10,17 +10,17 @@ export const useComplaintStore = () => {
     crime_category: rawComplaint?.crime_category || store.classification?.category,
     risk_level: rawComplaint?.risk_level || store.risk?.level || 'MEDIUM',
     risk_score: rawComplaint?.risk_score || store.risk?.score,
-    incident_date: rawComplaint?.incident_date || null,
-    financial_loss: rawComplaint?.financial_loss ?? null,
-    generated_complaint: rawComplaint?.complaint_text || rawComplaint?.incident_description || store.complaintText || '',
-    checklist: rawComplaint?.evidence_checklist || store.evidenceChecklist || [
+    incident_date: rawComplaint?.incident_date || (store.extractedEntities?.dates?.[0] || null),
+    financial_loss: rawComplaint?.financial_loss ?? (store.extractedEntities?.amounts?.[0] ? parseFloat(String(store.extractedEntities.amounts[0]).replace(/[^0-9.]/g, '')) : null),
+    generated_complaint: store.complaintText || rawComplaint?.complaint_text || rawComplaint?.incident_description || '',
+    checklist: (rawComplaint?.evidence_checklist?.items ? rawComplaint.evidence_checklist.items : (store.evidenceChecklist?.length ? store.evidenceChecklist : [
       'Screenshots of fraudulent transaction / payment receipt',
       'Bank account statement showing debited amount',
       'SMS / Chat communication records with perpetrator',
       'Caller ID / Phone number records / WhatsApp chat export',
-    ],
-    timeline: rawComplaint?.timeline || store.timeline || [],
-    extracted_entities: rawComplaint?.extracted_entities || store.extractedEntities || {},
+    ])),
+    timeline: (store.timeline && store.timeline.length > 0) ? store.timeline : (rawComplaint?.timeline || []),
+    extracted_entities: (store.extractedEntities && Object.keys(store.extractedEntities).length > 0) ? store.extractedEntities : (rawComplaint?.extracted_entities || {}),
   };
 
   return {
@@ -104,6 +104,10 @@ export const useComplaintStore = () => {
     startChat: async (complaintId) => {
       if (complaintId) {
         store.setActiveComplaint(complaintId);
+        try {
+          await store.loadChatHistory(complaintId);
+        } catch (e) {}
+        return complaintId;
       }
       if (!store.chatMessages || store.chatMessages.length === 0) {
         return await store.startComplaint();

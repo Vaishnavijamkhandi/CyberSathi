@@ -23,12 +23,14 @@ PATTERNS = {
     ),
     "amounts": re.compile(
         r"(?:₹|Rs\.?|INR|rupees?)\s*[\d,]+(?:\.\d{1,2})?|"
-        r"[\d,]+(?:\.\d{1,2})?\s*(?:₹|Rs\.?|INR|rupees?)"
+        r"[\d,]+(?:\.\d{1,2})?\s*(?:₹|Rs\.?|INR|rupees?)|"
+        r"(?:(?:lost|transferred|sent|paid|debited|loss\s*(?:of)?|amount\s*(?:of|is|:)?)\s*(?:₹|Rs\.?|INR|rupees?)?\s*([\d,]+(?:\.\d{1,2})?))",
+        re.IGNORECASE,
     ),
     "transaction_ids": re.compile(
         r"(?:txn(?:\s*id)?|transaction\s*(?:id|no\.?|number|ref(?:erence)?)|"
-        r"utr|rrn|ref(?:erence)?\s*(?:id|no\.?|number)|order\s*(?:id|no\.?))"
-        r"[\s:]*([A-Z0-9]{6,25})",
+        r"utr(?:\s*no\.?|\s*number)?|rrn|upi\s*ref(?:erence)?|ref(?:erence)?\s*(?:id|no\.?|number)|order\s*(?:id|no\.?))"
+        r"[\s:=#]*([A-Z0-9]{6,25})",
         re.IGNORECASE,
     ),
     "urls": re.compile(
@@ -66,16 +68,21 @@ PATTERNS = {
 }
 
 BANK_NAMES = [
-    "SBI", "State Bank", "HDFC", "ICICI", "Axis Bank", "Kotak", "Punjab National",
-    "PNB", "Bank of Baroda", "BOB", "Canara Bank", "Union Bank", "IndusInd",
-    "Yes Bank", "IDFC", "Federal Bank", "UCO Bank", "Indian Bank", "IOB",
-    "Paytm", "PhonePe", "Google Pay", "GPay", "Amazon Pay", "BHIM",
-    "MobiKwik", "Freecharge", "Airtel Money", "Jio Pay",
+    "SBI", "State Bank of India", "State Bank", "HDFC Bank", "HDFC", "ICICI Bank", "ICICI",
+    "Axis Bank", "Axis", "Kotak Mahindra", "Kotak", "Punjab National Bank", "PNB",
+    "Bank of Baroda", "BOB", "Canara Bank", "Union Bank of India", "Union Bank",
+    "IndusInd Bank", "IndusInd", "Yes Bank", "IDFC First Bank", "IDFC", "Federal Bank",
+    "UCO Bank", "Indian Bank", "IOB", "Paytm Payments Bank", "Airtel Payments Bank",
 ]
 
 PAYMENT_APPS = [
-    "PhonePe", "Google Pay", "GPay", "Paytm", "BHIM", "Amazon Pay",
-    "WhatsApp Pay", "Cred", "Slice", "MobiKwik",
+    "PhonePe", "Google Pay", "GPay", "Paytm", "BHIM UPI", "BHIM", "Amazon Pay",
+    "WhatsApp Pay", "Cred", "Slice", "MobiKwik", "Freecharge",
+]
+
+PLATFORMS = [
+    "LinkedIn", "Instagram", "Facebook", "WhatsApp", "Telegram", "Twitter", "X",
+    "Snapchat", "Gmail", "Google", "Yahoo", "Outlook", "YouTube", "Discord", "Reddit",
 ]
 
 BANK_PATTERN = re.compile(
@@ -85,6 +92,11 @@ BANK_PATTERN = re.compile(
 
 PAYMENT_APP_PATTERN = re.compile(
     r"\b(" + "|".join(re.escape(p) for p in PAYMENT_APPS) + r")\b",
+    re.IGNORECASE,
+)
+
+PLATFORM_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(p) for p in PLATFORMS) + r")\b",
     re.IGNORECASE,
 )
 
@@ -102,7 +114,7 @@ def _deduplicate(items: List[str]) -> List[str]:
 
 def _clean_amount(raw: str) -> str:
     """Normalize amount strings to a consistent format."""
-    num = re.sub(r"[₹RsINrupee\s,]", "", raw, flags=re.IGNORECASE).strip(".")
+    num = re.sub(r"[^\d.]", "", raw).strip(".")
     try:
         val = float(num)
         return f"₹{val:,.2f}"
@@ -113,11 +125,6 @@ def _clean_amount(raw: str) -> str:
 def extract_entities(text: str) -> Dict[str, Any]:
     """
     Extract all cybercrime-relevant entities from text.
-
-    Returns:
-        dict with keys: phones, upi_ids, amounts, transaction_ids, urls,
-                        emails, account_numbers, ifsc_codes, dates, times,
-                        banks, payment_apps, pan_numbers
     """
     entities: Dict[str, Any] = {}
 
@@ -128,11 +135,32 @@ def extract_entities(text: str) -> Dict[str, Any]:
     entities["upi_ids"] = _deduplicate(PATTERNS["upi_ids"].findall(text))
 
     # Financial amounts
-    raw_amounts = PATTERNS["amounts"].findall(text)
-    entities["amounts"] = _deduplicate([_clean_amount(a) for a in raw_amounts])
+    raw_amounts = []
+    # 1. Regex matches
+    for match in PATTERNS["amounts"].finditer(text):
+        matched_str = match.group(1) if match.group(1) else match.group(0)
+        raw_amounts.append(matched_str)
 
-    # Transaction IDs
-    entities["transaction_ids"] = _deduplicate(PATTERNS["transaction_ids"].findall(text))
+    # 2. Standalone number detection (e.g. user just enters "25000" or "50000")
+    trimmed = text.strip().replace(",", "")
+    if re.fullmatch(r"\d{3,8}(?:\.\d{1,2})?", trimmed):
+        raw_amounts.append(trimmed)
+
+    entities["amounts"] = _deduplicate([_clean_amount(a) for a in raw_amounts if a])
+
+    # Transaction IDs / UTRs
+    tx_ids = []
+    for match in PATTERNS["transaction_ids"].finditer(text):
+        tx_ids.append(match.group(1).strip())
+
+    # Standalone 12-digit UTR detection (common in Indian banking/UPI)
+    utr_candidates = re.findall(r"\b\d{12}\b", text)
+    for c in utr_candidates:
+        # ensure not a phone number or part of aadhaar
+        if not c.startswith(("6", "7", "8", "9")):
+            tx_ids.append(c)
+
+    entities["transaction_ids"] = _deduplicate(tx_ids)
 
     # URLs
     entities["urls"] = _deduplicate(PATTERNS["urls"].findall(text))
@@ -150,7 +178,15 @@ def extract_entities(text: str) -> Dict[str, Any]:
     entities["ifsc_codes"] = _deduplicate(PATTERNS["ifsc_codes"].findall(text))
 
     # Dates and times
-    entities["dates"] = _deduplicate(PATTERNS["dates"].findall(text))
+    found_dates = PATTERNS["dates"].findall(text)
+    text_lower = text.lower()
+    if "today" in text_lower:
+        found_dates.append(datetime.now().strftime("%d %B %Y"))
+    elif "yesterday" in text_lower:
+        from datetime import timedelta
+        found_dates.append((datetime.now() - timedelta(days=1)).strftime("%d %B %Y"))
+
+    entities["dates"] = _deduplicate(found_dates)
     entities["times"] = _deduplicate(PATTERNS["times"].findall(text))
 
     # Bank names
@@ -159,11 +195,13 @@ def extract_entities(text: str) -> Dict[str, Any]:
     # Payment apps
     entities["payment_apps"] = _deduplicate(PAYMENT_APP_PATTERN.findall(text))
 
+    # Social media & tech platforms
+    entities["platforms"] = _deduplicate(PLATFORM_PATTERN.findall(text))
+
     # PAN numbers (mask for privacy)
     pans = PATTERNS["pan_numbers"].findall(text)
     entities["pan_numbers"] = [p[:2] + "***" + p[-1] for p in _deduplicate(pans)]
 
-    # Remove empty lists for cleaner output
     return {k: v for k, v in entities.items() if v}
 
 
@@ -194,6 +232,7 @@ def entities_to_summary(entities: Dict) -> str:
         "times": "⏰ Times",
         "banks": "🏛️ Banks",
         "payment_apps": "📱 Payment Apps",
+        "platforms": "🌐 Affected Platforms",
     }
     for key, label in label_map.items():
         if key in entities and entities[key]:
