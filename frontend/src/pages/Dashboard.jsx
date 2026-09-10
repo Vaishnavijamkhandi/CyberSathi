@@ -220,6 +220,15 @@ export default function Dashboard() {
                       {c.crime_category}
                     </span>
                   )}
+                  {c.incident_date && (
+                    <span style={{
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontSize: "0.7rem",
+                      color: "#64748b",
+                    }}>
+                      📅 {new Date(c.incident_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}
+                    </span>
+                  )}
                 </div>
               </button>
             ))}

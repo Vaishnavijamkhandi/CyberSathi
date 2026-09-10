@@ -1,6 +1,9 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Base(DeclarativeBase):
@@ -36,8 +39,29 @@ async def get_db():
 
 
 async def create_tables():
-    """Create all tables on startup."""
+    """Create all tables on startup. Falls back to SQLite if PostgreSQL is unavailable."""
+    global engine, AsyncSessionLocal
     import app.models  # noqa: F401
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("[OK] PostgreSQL database connected and tables verified")
+    except Exception as e:
+        logger.warning(
+            f"PostgreSQL connection failed: {e}. Falling back to local SQLite database (cybercrime.db)"
+        )
+        sqlite_url = "sqlite+aiosqlite:///./cybercrime.db"
+        engine = create_async_engine(
+            sqlite_url,
+            echo=settings.DEBUG,
+        )
+        AsyncSessionLocal = async_sessionmaker(
+            engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("[OK] SQLite database initialized and tables ready")
+
 

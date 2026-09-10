@@ -3,14 +3,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from datetime import datetime
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User
 from app.models.complaint import Complaint, ChatMessage, ComplaintStatus
-from app.ml.ner_extractor import extract_entities, merge_entities
+from app.ml.ner_extractor import extract_entities, merge_entities, parse_datetime_flexible
 from app.ml.classifier import get_classifier
-from app.ml.risk_scorer import calculate_risk, RiskInput
+from app.ml.risk_scorer import calculate_risk, RiskInput, detect_risk_signals
 from app.services.gemini_service import get_gemini_service
 
 from app.models.evidence import EvidenceFile
@@ -39,6 +40,9 @@ class ChatResponse(BaseModel):
     incident_description: Optional[str] = None
     timeline: Optional[List[Dict[str, Any]]] = None
     title: Optional[str] = None
+    incident_date: Optional[str] = None
+    risk_score: Optional[float] = None
+    risk_level: Optional[str] = None
 
 
 class StartComplaintResponse(BaseModel):
@@ -145,20 +149,29 @@ async def send_message(
                     financial_loss = val
             except ValueError:
                 pass
+    if financial_loss == 0.0 and complaint.financial_loss:
+        financial_loss = float(complaint.financial_loss)
 
-    # 6. Detect risk signals from text
-    msg_lower = data.message.lower()
+    # 5b. Extract and persist incident date
+    if merged_entities.get("dates"):
+        date_cand = merged_entities["dates"][0]
+        time_cand = merged_entities.get("times", [None])[0] if merged_entities.get("times") else None
+        parsed_dt = parse_datetime_flexible(date_cand, time_cand)
+        if parsed_dt:
+            complaint.incident_date = parsed_dt
+
+    # Calculate hours since incident for urgency bonus
+    hours_elapsed = None
+    if complaint.incident_date:
+        hours_elapsed = max(0.0, (datetime.now() - complaint.incident_date).total_seconds() / 3600.0)
+
+    # 6. Detect risk signals from cumulative conversation
+    risk_signals = detect_risk_signals(user_messages_text)
     risk_input = RiskInput(
         financial_loss=financial_loss,
-        account_compromised=any(k in msg_lower for k in ["account hacked", "lost access", "locked out"]),
-        otp_shared=any(k in msg_lower for k in ["shared otp", "gave otp", "told otp", "otp share"]),
-        password_shared=any(k in msg_lower for k in ["shared password", "gave password"]),
-        credentials_exposed=any(k in msg_lower for k in ["entered credentials", "login details", "username password"]),
-        ongoing_attack=any(k in msg_lower for k in ["still happening", "ongoing", "right now", "currently"]),
-        identity_exposed=any(k in msg_lower for k in ["aadhaar", "pan card", "identity"]),
-        extortion_threat=any(k in msg_lower for k in ["threatening", "blackmail", "threat", "extortion"]),
-        malware_present=any(k in msg_lower for k in ["virus", "malware", "ransomware", "hacked device"]),
         crime_category=classification.get("category", ""),
+        hours_since_incident=hours_elapsed,
+        **risk_signals,
     )
     risk_result = calculate_risk(risk_input)
 
@@ -226,7 +239,7 @@ async def send_message(
     timeline_messages.append({"role": "user", "content": data.message, "extracted_entities": new_entities})
     timeline_messages.append({"role": "assistant", "content": bot_reply, "extracted_entities": {}})
 
-    timeline = build_timeline(timeline_messages, evidence_files, merged_entities)
+    timeline = build_timeline(timeline_messages, evidence_files, merged_entities, incident_date=complaint.incident_date)
     complaint.timeline = timeline
 
     # 14. Generate real-time incident description
@@ -301,6 +314,9 @@ async def send_message(
         incident_description=incident_desc,
         timeline=timeline,
         title=complaint.title,
+        incident_date=complaint.incident_date.isoformat() if complaint.incident_date else None,
+        risk_score=complaint.risk_score,
+        risk_level=complaint.risk_level,
     )
 
 
@@ -328,6 +344,14 @@ async def get_chat_history(
 
     return {
         "complaint_id": complaint_id,
+        "title": complaint.title,
+        "crime_category": complaint.crime_category,
+        "incident_date": complaint.incident_date.isoformat() if complaint.incident_date else None,
+        "financial_loss": complaint.financial_loss,
+        "risk_level": complaint.risk_level,
+        "risk_score": complaint.risk_score,
+        "complaint_text": complaint.complaint_text,
+        "timeline": complaint.timeline or [],
         "messages": [
             {
                 "id": msg.id,

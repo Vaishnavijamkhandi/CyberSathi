@@ -15,6 +15,8 @@ from app.services.complaint_gen import generate_complaint
 from app.services.timeline_gen import build_timeline
 from app.services.pdf_export import generate_complaint_pdf
 from app.services.gemini_service import get_gemini_service
+from app.ml.ner_extractor import parse_datetime_flexible
+from app.ml.risk_scorer import calculate_risk_score
 
 router = APIRouter(prefix="/api/complaint", tags=["Complaint"])
 
@@ -58,13 +60,17 @@ async def generate(
     # Update optional fields
     if data.payment_method:
         complaint.payment_method = data.payment_method
+    if data.incident_date:
+        parsed_dt = parse_datetime_flexible(data.incident_date)
+        if parsed_dt:
+            complaint.incident_date = parsed_dt
 
     # Build timeline
     msg_dicts = [
         {"role": msg.role, "content": msg.content, "extracted_entities": msg.extracted_entities or {}}
         for msg in messages
     ]
-    timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {})
+    timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {}, incident_date=complaint.incident_date)
     complaint.timeline = timeline
 
     # Generate incident description via Gemini
@@ -113,6 +119,8 @@ async def generate(
         "status": complaint.status,
         "crime_category": complaint.crime_category,
         "risk_level": complaint.risk_level,
+        "risk_score": complaint.risk_score,
+        "incident_date": complaint.incident_date.isoformat() if complaint.incident_date else None,
         "incident_description": description,
         "complaint_text": complaint_text,
         "timeline": timeline,
@@ -153,7 +161,7 @@ async def download_pdf(
             {"role": m.role, "content": m.content, "extracted_entities": m.extracted_entities or {}}
             for m in messages
         ]
-        timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {})
+        timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {}, incident_date=complaint.incident_date)
         complaint.timeline = timeline
 
         gemini = get_gemini_service()
@@ -232,7 +240,9 @@ async def list_complaints(
                 "status": c.status,
                 "crime_category": c.crime_category,
                 "risk_level": c.risk_level,
+                "risk_score": c.risk_score,
                 "financial_loss": c.financial_loss,
+                "incident_date": c.incident_date.isoformat() if c.incident_date else None,
                 "created_at": c.created_at.isoformat(),
             }
             for c in complaints
@@ -372,14 +382,80 @@ async def update_complaint_details(
     if data.payment_method is not None:
         complaint.payment_method = data.payment_method
     if data.incident_date is not None:
-        try:
-            from datetime import datetime
-            complaint.incident_date = datetime.fromisoformat(data.incident_date)
-        except Exception:
-            pass
+        raw_date = data.incident_date.strip() if isinstance(data.incident_date, str) else data.incident_date
+        if raw_date:
+            complaint.incident_date = parse_datetime_flexible(raw_date)
+        else:
+            complaint.incident_date = None
+
+    # Re-evaluate timeline and complaint text with new details
+    msg_result = await db.execute(
+        select(ChatMessage).where(ChatMessage.complaint_id == complaint_id).order_by(ChatMessage.id)
+    )
+    messages = msg_result.scalars().all()
+
+    ef_result = await db.execute(
+        select(EvidenceFile).where(EvidenceFile.complaint_id == complaint_id)
+    )
+    evidence_files = ef_result.scalars().all()
+
+    msg_dicts = [
+        {"role": m.role, "content": m.content, "extracted_entities": m.extracted_entities or {}}
+        for m in messages
+    ]
+    complaint.timeline = build_timeline(msg_dicts, evidence_files, complaint.extracted_entities or {}, incident_date=complaint.incident_date)
+
+    # Recalculate risk if financial loss or incident date changed
+    hours_elapsed = None
+    if complaint.incident_date:
+        from datetime import datetime
+        hours_elapsed = max(0.0, (datetime.now() - complaint.incident_date).total_seconds() / 3600.0)
+
+    user_text = " ".join(m.content for m in messages if m.role == "user")
+    updated_risk = calculate_risk_score(
+        crime_category=complaint.crime_category or "",
+        financial_loss=float(complaint.financial_loss or 0.0),
+        text=user_text,
+        hours_since_incident=hours_elapsed,
+    )
+    complaint.risk_level = updated_risk["level"]
+    complaint.risk_score = updated_risk["score"]
+    complaint.risk_breakdown = updated_risk["breakdown"]
+
+    # Re-generate formal complaint text
+    complaint.complaint_text = generate_complaint(
+        user=current_user,
+        complaint_data={
+            "crime_category": complaint.crime_category or "Cybercrime",
+            "crime_category_confidence": complaint.crime_category_confidence or 0.0,
+            "crime_indicators": complaint.crime_indicators or [],
+            "risk_level": complaint.risk_level or "MEDIUM",
+            "financial_loss": complaint.financial_loss,
+            "payment_method": complaint.payment_method,
+            "incident_description": complaint.incident_description or "",
+            "incident_date": complaint.incident_date,
+        },
+        entities=complaint.extracted_entities or {},
+        timeline=complaint.timeline,
+        evidence_files=evidence_files,
+        incident_description=complaint.incident_description or "",
+    )
 
     db.add(complaint)
-    return {"message": "Complaint updated successfully.", "id": complaint.id}
+    await db.flush()
+
+    return {
+        "message": "Complaint updated successfully.",
+        "id": complaint.id,
+        "title": complaint.title,
+        "incident_date": complaint.incident_date.isoformat() if complaint.incident_date else None,
+        "financial_loss": complaint.financial_loss,
+        "payment_method": complaint.payment_method,
+        "risk_level": complaint.risk_level,
+        "risk_score": complaint.risk_score,
+        "timeline": complaint.timeline,
+        "complaint_text": complaint.complaint_text,
+    }
 
 
 @router.delete("/{complaint_id}")

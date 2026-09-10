@@ -147,13 +147,25 @@ def generate_complaint(
 
     # Format dates
     incident_date_obj = complaint_data.get("incident_date")
-    incident_date_str = incident_date_obj.strftime("%d %B %Y") if incident_date_obj else "Not specified"
+    incident_date_str = "Not specified"
+    incident_time_str = "Not specified"
+
+    if incident_date_obj:
+        if isinstance(incident_date_obj, str):
+            from app.ml.ner_extractor import parse_datetime_flexible
+            incident_date_obj = parse_datetime_flexible(incident_date_obj)
+        if incident_date_obj:
+            incident_date_str = incident_date_obj.strftime("%d %B %Y")
+            if incident_date_obj.hour != 0 or incident_date_obj.minute != 0:
+                incident_time_str = incident_date_obj.strftime("%I:%M %p")
+
     incident_dates = entities.get("dates", [])
     if incident_dates and incident_date_str == "Not specified":
         incident_date_str = incident_dates[0]
 
     incident_times = entities.get("times", [])
-    incident_time_str = incident_times[0] if incident_times else "Not specified"
+    if incident_times and incident_time_str == "Not specified":
+        incident_time_str = incident_times[0]
 
     complaint_text = COMPLAINT_TEMPLATE.format(
         complainant_name=getattr(user, "full_name", "Complainant"),

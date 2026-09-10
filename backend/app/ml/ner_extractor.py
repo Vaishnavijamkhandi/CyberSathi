@@ -6,8 +6,8 @@ Handles: phone numbers, UPI IDs, amounts, transaction IDs, bank names,
 """
 
 import re
-from typing import Dict, List, Any
-from datetime import datetime
+from typing import Dict, List, Any, Optional
+from datetime import datetime, date, timedelta
 
 
 # ─── Regex Patterns ────────────────────────────────────────────────────────────
@@ -47,17 +47,25 @@ PATTERNS = {
         r"\b[A-Z]{4}0[A-Z0-9]{6}\b"
     ),
     "dates": re.compile(
-        r"\b(?:\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|"
+        r"\b(?:"
+        r"\d{4}[-\/\.]\d{1,2}[-\/\.]\d{1,2}|"  # 2024-05-10
+        r"\d{1,2}[-\/\.]\d{1,2}[-\/\.]\d{2,4}|"  # 10/05/2024
         r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
         r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-        r"\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4}|"
-        r"\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+        r"\s+\d{1,2}(?:st|nd|rd|th)?,?(?:\s*\d{4})?|"  # March 10 or March 10, 2024
+        r"\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
         r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-        r"\s+\d{4})\b",
+        r"(?:,?\s*\d{4})?"  # 10th March or 10 March 2024
+        r")\b",
         re.IGNORECASE,
     ),
     "times": re.compile(
-        r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b"
+        r"\b(?:"
+        r"\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?|"  # 3:30 PM, 14:30
+        r"(?:[01]?\d|2[0-3])\s*(?:AM|PM|am|pm)|"  # 3 PM, 3pm, 11 am
+        r"\d{1,2}\s*o'clock"  # 3 o'clock
+        r")\b",
+        re.IGNORECASE,
     ),
     "pan_numbers": re.compile(
         r"\b[A-Z]{5}\d{4}[A-Z]\b"
@@ -180,11 +188,20 @@ def extract_entities(text: str) -> Dict[str, Any]:
     # Dates and times
     found_dates = PATTERNS["dates"].findall(text)
     text_lower = text.lower()
-    if "today" in text_lower:
-        found_dates.append(datetime.now().strftime("%d %B %Y"))
-    elif "yesterday" in text_lower:
-        from datetime import timedelta
-        found_dates.append((datetime.now() - timedelta(days=1)).strftime("%d %B %Y"))
+    now = datetime.now()
+    if "day before yesterday" in text_lower:
+        found_dates.append((now - timedelta(days=2)).strftime("%d %B %Y"))
+    elif "yesterday" in text_lower or "last night" in text_lower:
+        found_dates.append((now - timedelta(days=1)).strftime("%d %B %Y"))
+    elif "today" in text_lower or "this morning" in text_lower or "just now" in text_lower:
+        found_dates.append(now.strftime("%d %B %Y"))
+    else:
+        days_ago = re.findall(r"\b(\d+)\s+days?\s+ago\b", text_lower)
+        for d in days_ago:
+            try:
+                found_dates.append((now - timedelta(days=int(d))).strftime("%d %B %Y"))
+            except ValueError:
+                pass
 
     entities["dates"] = _deduplicate(found_dates)
     entities["times"] = _deduplicate(PATTERNS["times"].findall(text))
@@ -238,6 +255,87 @@ def entities_to_summary(entities: Dict) -> str:
         if key in entities and entities[key]:
             parts.append(f"{label}: {', '.join(str(v) for v in entities[key])}")
     return "\n".join(parts) if parts else "No specific entities detected."
+
+
+def parse_datetime_flexible(date_val: Any, time_val: Optional[Any] = None) -> Optional[datetime]:
+    """
+    Flexibly parse date and optional time from strings or existing datetimes into a valid datetime object.
+    Supports ISO formats, standard Indian/UK and US formats, textual month names, and relative phrases.
+    """
+    if not date_val:
+        return None
+    if isinstance(date_val, datetime):
+        dt = date_val
+    elif isinstance(date_val, date):
+        dt = datetime(date_val.year, date_val.month, date_val.day)
+    else:
+        raw_str = str(date_val).strip()
+        dt = None
+        
+        # 1. Try ISO fromisoformat
+        try:
+            iso_clean = raw_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso_clean)
+        except (ValueError, TypeError):
+            pass
+
+        # 2. Check relative dates
+        if dt is None:
+            raw_lower = raw_str.lower()
+            now = datetime.now()
+            if "day before yesterday" in raw_lower:
+                dt = now - timedelta(days=2)
+            elif "yesterday" in raw_lower or "last night" in raw_lower:
+                dt = now - timedelta(days=1)
+            elif "today" in raw_lower or "this morning" in raw_lower or "just now" in raw_lower:
+                dt = now
+            else:
+                days_ago_match = re.search(r"(\d+)\s+days?\s+ago", raw_lower)
+                if days_ago_match:
+                    dt = now - timedelta(days=int(days_ago_match.group(1)))
+
+        # 3. Try standard formats
+        if dt is None:
+            cleaned_date = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", raw_str)
+            cleaned_date = re.sub(r"[,\s]+", " ", cleaned_date).strip()
+            date_formats = [
+                "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
+                "%d/%m/%y", "%d-%m-%y", "%m/%d/%Y", "%m/%d/%y",
+                "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y",
+                "%d %B", "%d %b", "%B %d", "%b %d",
+                "%Y/%m/%d", "%Y.%m.%d",
+            ]
+            for fmt in date_formats:
+                try:
+                    parsed = datetime.strptime(cleaned_date, fmt)
+                    if "%Y" not in fmt and "%y" not in fmt:
+                        parsed = parsed.replace(year=datetime.now().year)
+                    dt = parsed
+                    break
+                except ValueError:
+                    continue
+
+    if dt is None:
+        return None
+
+    # Parse and combine time if provided
+    if time_val:
+        time_str = str(time_val).strip()
+        time_cleaned = re.sub(r"\s+", " ", time_str).upper()
+        time_cleaned = re.sub(r"(\d+)(AM|PM)", r"\1 \2", time_cleaned)
+        time_formats = [
+            "%I:%M %p", "%I:%M:%S %p", "%I %p",
+            "%H:%M", "%H:%M:%S",
+        ]
+        for tfmt in time_formats:
+            try:
+                t = datetime.strptime(time_cleaned, tfmt)
+                dt = dt.replace(hour=t.hour, minute=t.minute, second=t.second)
+                break
+            except ValueError:
+                continue
+
+    return dt
 
 
 if __name__ == "__main__":

@@ -43,37 +43,76 @@ class RiskOutput:
 
 # ─── Scoring Weights ───────────────────────────────────────────────────────────
 
+CRIME_CATEGORY_BASE_SCORES = {
+    # Critical categories (35-50 pts)
+    "malware / ransomware": 45,
+    "cyber extortion": 45,
+    "ransomware": 45,
+    "extortion": 45,
+    "sextortion": 45,
+    "child sexual abuse material (csam)": 50,
+    "digital arrest scam": 40,
+    "cyber espionage / corporate hack": 40,
+
+    # High severity categories (20-30 pts)
+    "banking fraud": 28,
+    "banking fraud / upi fraud": 28,
+    "upi / payment fraud": 20,
+    "otp / social engineering": 24,
+    "identity theft": 28,
+    "sim swap fraud": 30,
+    "investment fraud": 24,
+    "investment / trading scam": 24,
+    "cryptocurrency fraud": 24,
+    "crypto fraud": 24,
+    "loan app scam": 24,
+
+    # Medium severity categories (12-18 pts)
+    "phishing": 18,
+    "phishing / spoofing": 18,
+    "job / employment fraud": 16,
+    "job / task scam": 16,
+    "account compromise": 18,
+    "impersonation": 18,
+    "social media fraud": 14,
+    "social media crime / impersonation": 14,
+    "e-commerce fraud": 10,
+    "e-commerce / lottery fraud": 10,
+    "other / unknown": 0,
+}
+
 FINANCIAL_THRESHOLDS = [
-    (500_000, 35),   # > ₹5 Lakh  → 35 pts
-    (100_000, 28),   # > ₹1 Lakh  → 28 pts
-    (50_000,  20),   # > ₹50k     → 20 pts
-    (10_000,  12),   # > ₹10k     → 12 pts
-    (1_000,    6),   # > ₹1k      →  6 pts
-    (0,        2),   # Any loss   →  2 pts
+    (500_000, 35),   # >= ₹5 Lakh  → 35 pts
+    (100_000, 30),   # >= ₹1 Lakh  → 30 pts
+    (50_000,  25),   # >= ₹50k     → 25 pts
+    (20_000,  20),   # >= ₹20k     → 20 pts
+    (5_000,   15),   # >= ₹5k      → 15 pts
+    (1_000,   10),   # >= ₹1k      → 10 pts
+    (1,        5),   # > ₹0        →  5 pts
 ]
 
 BOOLEAN_WEIGHTS = {
     "account_compromised": 20,
-    "otp_shared":          15,
+    "otp_shared":          18,
     "password_shared":     18,
     "pin_shared":          18,
-    "credentials_exposed": 15,
+    "credentials_exposed": 16,
     "ongoing_attack":      25,
     "identity_exposed":    12,
-    "extortion_threat":    20,
-    "malware_present":     18,
+    "extortion_threat":    22,
+    "malware_present":     20,
 }
 
 TIME_BONUSES = [
-    (1,  10),   # < 1 hr  → extra 10 pts urgency
-    (6,   7),   # < 6 hrs → extra 7 pts
-    (24,  4),   # < 24hrs → extra 4 pts
+    (2,  12),   # <= 2 hrs  → extra 12 pts (golden window for 1930 / bank freeze)
+    (6,   8),   # <= 6 hrs  → extra 8 pts
+    (24,  5),   # <= 24 hrs → extra 5 pts
 ]
 
 RISK_THRESHOLDS = {
-    "CRITICAL": 65,
-    "HIGH":     40,
-    "MEDIUM":   20,
+    "CRITICAL": 60,
+    "HIGH":     38,
+    "MEDIUM":   18,
     "LOW":       0,
 }
 
@@ -115,27 +154,38 @@ def calculate_risk(inp: RiskInput) -> RiskOutput:
     breakdown: Dict[str, float] = {}
     total_score = 0.0
 
-    # 1. Financial impact
+    # 1. Crime Category base urgency
+    cat_score = 0.0
+    if inp.crime_category:
+        cat_lower = inp.crime_category.lower().strip()
+        for cat_key, pts in CRIME_CATEGORY_BASE_SCORES.items():
+            if cat_key in cat_lower or cat_lower in cat_key:
+                cat_score = max(cat_score, pts)
+    if cat_score > 0:
+        breakdown["crime_category_urgency"] = float(cat_score)
+        total_score += cat_score
+
+    # 2. Financial impact
     fin_score = 0.0
     for threshold, pts in FINANCIAL_THRESHOLDS:
-        if inp.financial_loss > threshold:
-            fin_score = pts
+        if inp.financial_loss >= threshold:
+            fin_score = float(pts)
             break
     breakdown["financial_impact"] = fin_score
     total_score += fin_score
 
-    # 2. Boolean risk factors
+    # 3. Boolean risk factors
     for factor, weight in BOOLEAN_WEIGHTS.items():
         if getattr(inp, factor, False):
             breakdown[factor] = float(weight)
             total_score += weight
 
-    # 3. Time-based urgency bonus
+    # 4. Time-based urgency bonus
     time_bonus = 0.0
     if inp.hours_since_incident is not None:
         for hours, bonus in TIME_BONUSES:
             if inp.hours_since_incident <= hours:
-                time_bonus = bonus
+                time_bonus = float(bonus)
                 break
     breakdown["time_urgency"] = time_bonus
     total_score += time_bonus
@@ -143,17 +193,18 @@ def calculate_risk(inp: RiskInput) -> RiskOutput:
     # Cap at 100
     total_score = min(total_score, 100.0)
 
-    # 4. Determine level
+    # 5. Determine level
     level = "LOW"
     for lvl, threshold in RISK_THRESHOLDS.items():
         if total_score >= threshold:
             level = lvl
             break
 
-    # 5. Build explanation
+    # 6. Build explanation
     top_factors = sorted(breakdown.items(), key=lambda x: x[1], reverse=True)
     top_3 = [f for f in top_factors if f[1] > 0][:3]
     factor_labels = {
+        "crime_category_urgency": "crime category severity",
         "financial_impact": "significant financial loss",
         "account_compromised": "account compromise",
         "otp_shared": "OTP disclosure",
@@ -186,25 +237,71 @@ def risk_from_dict(data: dict) -> RiskOutput:
     return calculate_risk(inp)
 
 
+def detect_risk_signals(text: str) -> Dict[str, bool]:
+    """
+    Extract boolean risk indicators from text using comprehensive cybercrime terminology.
+    """
+    text_lower = (text or "").lower()
+    return {
+        "account_compromised": any(k in text_lower for k in [
+            "account hacked", "lost access", "locked out", "compromised", "hacked",
+            "can't login", "cannot login", "unable to login", "unauthorized access",
+            "account takeover", "password changed", "stolen account",
+        ]),
+        "otp_shared": any(k in text_lower for k in [
+            "shared otp", "gave otp", "told otp", "otp share", "entered otp",
+            "sent otp", "provided otp", "submitted otp", "given otp", "put otp",
+            "entered the otp", "shared the otp", "asked for otp", "asked for the otp",
+            "gave the otp", "told the otp", "one time password",
+        ]),
+        "password_shared": any(k in text_lower for k in [
+            "shared password", "gave password", "entered password", "told password",
+            "sent password", "provided password",
+        ]),
+        "pin_shared": any(k in text_lower for k in [
+            "shared pin", "entered pin", "gave pin", "mpin", "atm pin", "cvv",
+            "card pin", "transaction pin", "upi pin",
+        ]),
+        "credentials_exposed": any(k in text_lower for k in [
+            "entered credentials", "login details", "username password", "netbanking",
+            "card details", "debit card details", "credit card details", "atm card",
+            "entered card", "banking credentials",
+        ]),
+        "ongoing_attack": any(k in text_lower for k in [
+            "still happening", "ongoing", "right now", "currently", "money is still being debited",
+            "they are calling again", "active now", "in progress", "just debited again",
+        ]),
+        "identity_exposed": any(k in text_lower for k in [
+            "aadhaar", "pan card", "identity", "passport", "voter id", "driving license",
+            "kyc documents",
+        ]),
+        "extortion_threat": any(k in text_lower for k in [
+            "threatening", "blackmail", "threat", "extortion", "threatened", "defame",
+            "leak", "nude", "private photos", "private video", "police case",
+            "digital arrest", "demanding money", "cbi arrest", "customs notice",
+        ]),
+        "malware_present": any(k in text_lower for k in [
+            "virus", "malware", "ransomware", "hacked device", "anydesk", "teamviewer",
+            "rustdesk", "quicksupport", "screen share", "remote access", "downloaded apk",
+            "installed apk", "malicious app",
+        ]),
+    }
+
+
 def calculate_risk_score(
     crime_category: str = "",
     financial_loss: float = 0.0,
     text: str = "",
     extracted_entities: Optional[dict] = None,
+    hours_since_incident: Optional[float] = None,
 ) -> dict:
     """Calculate risk score and return as dictionary."""
-    text_lower = (text or "").lower()
+    signals = detect_risk_signals(text)
     inp = RiskInput(
         financial_loss=financial_loss,
-        account_compromised=any(k in text_lower for k in ["account hacked", "lost access", "locked out"]),
-        otp_shared=any(k in text_lower for k in ["shared otp", "gave otp", "told otp", "otp share"]),
-        password_shared=any(k in text_lower for k in ["shared password", "gave password"]),
-        credentials_exposed=any(k in text_lower for k in ["entered credentials", "login details", "username password"]),
-        ongoing_attack=any(k in text_lower for k in ["still happening", "ongoing", "right now", "currently"]),
-        identity_exposed=any(k in text_lower for k in ["aadhaar", "pan card", "identity"]),
-        extortion_threat=any(k in text_lower for k in ["threatening", "blackmail", "threat", "extortion"]),
-        malware_present=any(k in text_lower for k in ["virus", "malware", "ransomware", "hacked device"]),
         crime_category=crime_category,
+        hours_since_incident=hours_since_incident,
+        **signals,
     )
     res = calculate_risk(inp)
     return {

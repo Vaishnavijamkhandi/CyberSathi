@@ -120,6 +120,7 @@ const useStore = create(
       extractedEntities: {},
       classification: null,
       risk: null,
+      incidentDate: null,
       missingInfo: [],
       evidenceChecklist: [],
       evidenceFiles: [],
@@ -141,6 +142,7 @@ const useStore = create(
           extractedEntities: {},
           classification: null,
           risk: null,
+          incidentDate: null,
           missingInfo: [],
           evidenceChecklist: [],
           evidenceFiles: [],
@@ -174,6 +176,7 @@ const useStore = create(
                 crime_category: res.data.classification?.category || c.crime_category,
                 risk_level: res.data.risk?.level || c.risk_level,
                 risk_score: res.data.risk?.score || c.risk_score,
+                incident_date: res.data.incident_date || c.incident_date,
                 complaint_text: res.data.complaint_text || c.complaint_text,
                 incident_description: res.data.incident_description || c.incident_description,
                 timeline: res.data.timeline || c.timeline,
@@ -188,6 +191,7 @@ const useStore = create(
             extractedEntities: res.data.extracted_entities || {},
             classification: res.data.classification || null,
             risk: res.data.risk || null,
+            incidentDate: res.data.incident_date || s.incidentDate,
             missingInfo: res.data.missing_info || [],
             evidenceChecklist: res.data.evidence_checklist || [],
             activeComplaintId: complaintId,
@@ -208,11 +212,17 @@ const useStore = create(
             api.get(`/api/complaint/${complaintId}`).catch(() => null),
           ]);
           const update = { chatMessages: chatRes.data.messages, activeComplaintId: complaintId };
+          if (chatRes?.data?.incident_date) {
+            update.incidentDate = chatRes.data.incident_date;
+          }
           if (compRes?.data) {
             update.complaintText = compRes.data.complaint_text || update.complaintText;
             update.incidentDescription = compRes.data.incident_description;
             update.timeline = compRes.data.timeline || [];
             update.extractedEntities = compRes.data.extracted_entities || {};
+            if (compRes.data.incident_date) {
+              update.incidentDate = compRes.data.incident_date;
+            }
             if (compRes.data.crime_category) {
               update.classification = {
                 category: compRes.data.crime_category,
@@ -229,7 +239,7 @@ const useStore = create(
           set(update);
         } catch (e) {
           const res = await api.get(`/api/chat/${complaintId}/history`);
-          set({ chatMessages: res.data.messages, activeComplaintId: complaintId });
+          set({ chatMessages: res.data.messages, activeComplaintId: complaintId, incidentDate: res.data.incident_date || null });
         }
       },
 

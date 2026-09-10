@@ -10,6 +10,23 @@ import useStore from "../store/useStore";
 
 const TABS = ["Draft", "Evidence checklist", "Timeline", "Identifiers"];
 
+function formatIncidentDate(raw) {
+  if (!raw) return "Not set";
+  try {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      const hasTime = d.getHours() !== 0 || d.getMinutes() !== 0;
+      return d.toLocaleDateString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        ...(hasTime ? { hour: "2-digit", minute: "2-digit", hour12: true } : {}),
+      });
+    }
+  } catch (e) {}
+  return String(raw);
+}
+
 export default function ComplaintDraft() {
   const outlet = useOutletContext();
   const store = useStore();
@@ -281,7 +298,7 @@ export default function ComplaintDraft() {
             <div>
               <p style={{ fontSize: "0.72rem", color: "#64748b", margin: "0 0 2px" }}>Incident date</p>
               <p style={{ fontSize: "0.9rem", color: "#f8fafc", margin: 0 }}>
-                {activeComplaint.incident_date || "Not set"}
+                {formatIncidentDate(activeComplaint.incident_date)}
               </p>
             </div>
             <div>

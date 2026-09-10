@@ -168,11 +168,30 @@ def generate_complaint_pdf(
     # ─── Section: Classification ───────────────────────────────────────────────
     story.append(Paragraph("SECTION 2 — INCIDENT CLASSIFICATION", section_header_style))
     confidence = int((complaint_data.get("crime_category_confidence", 0)) * 100)
+
+    inc_date_raw = complaint_data.get("incident_date")
+    inc_date_str = "Not specified"
+    inc_time_str = "Not specified"
+    if inc_date_raw:
+        if isinstance(inc_date_raw, str):
+            from app.ml.ner_extractor import parse_datetime_flexible
+            inc_date_raw = parse_datetime_flexible(inc_date_raw)
+        if inc_date_raw:
+            inc_date_str = inc_date_raw.strftime("%d %B %Y")
+            if inc_date_raw.hour != 0 or inc_date_raw.minute != 0:
+                inc_time_str = inc_date_raw.strftime("%I:%M %p")
+
+    if inc_date_str == "Not specified" and entities.get("dates"):
+        inc_date_str = entities["dates"][0]
+    if inc_time_str == "Not specified" and entities.get("times"):
+        inc_time_str = entities["times"][0]
+
     classification_data = [
         ["Crime Category:", complaint_data.get("crime_category", "Unknown")],
         ["AI Confidence:", f"{confidence}%"],
         ["Risk Level:", risk_level],
-        ["Incident Date:", complaint_data.get("incident_date", "Not specified") or entities.get("dates", ["Not specified"])[0] if entities.get("dates") else "Not specified"],
+        ["Incident Date:", inc_date_str],
+        ["Incident Time:", inc_time_str],
     ]
     _add_info_table(story, classification_data, label_style, value_style)
 

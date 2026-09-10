@@ -9,8 +9,8 @@ export const useComplaintStore = () => {
     title: rawComplaint?.title || (store.activeComplaintId ? `Case #${store.activeComplaintId}` : 'New Case'),
     crime_category: rawComplaint?.crime_category || store.classification?.category,
     risk_level: rawComplaint?.risk_level || store.risk?.level || 'MEDIUM',
-    risk_score: rawComplaint?.risk_score || store.risk?.score,
-    incident_date: rawComplaint?.incident_date || (store.extractedEntities?.dates?.[0] || null),
+    risk_score: rawComplaint?.risk_score !== undefined ? rawComplaint?.risk_score : store.risk?.score,
+    incident_date: rawComplaint?.incident_date || store.incidentDate || (store.extractedEntities?.dates?.[0] || null),
     financial_loss: rawComplaint?.financial_loss ?? (store.extractedEntities?.amounts?.[0] ? parseFloat(String(store.extractedEntities.amounts[0]).replace(/[^0-9.]/g, '')) : null),
     generated_complaint: store.complaintText || rawComplaint?.complaint_text || rawComplaint?.incident_description || '',
     checklist: (rawComplaint?.evidence_checklist?.items ? rawComplaint.evidence_checklist.items : (store.evidenceChecklist?.length ? store.evidenceChecklist : [
@@ -37,12 +37,14 @@ export const useComplaintStore = () => {
       try {
         const res = await api.get(`/api/complaint/${id}`);
         const c = res.data;
-        // update local complaint text
+        // update local state
         useStore.setState((s) => ({
           complaintText: c.complaint_text || c.incident_description,
           evidenceChecklist: c.evidence_checklist || s.evidenceChecklist,
           timeline: c.timeline || s.timeline,
           extractedEntities: c.extracted_entities || s.extractedEntities,
+          incidentDate: c.incident_date || s.incidentDate,
+          risk: c.risk_level ? { level: c.risk_level, score: c.risk_score } : s.risk,
         }));
       } catch (e) {
         // fallback
@@ -64,17 +66,24 @@ export const useComplaintStore = () => {
         timeline: res.data.timeline || s.timeline,
         evidenceChecklist: res.data.evidence_checklist || s.evidenceChecklist,
         extractedEntities: res.data.extracted_entities || s.extractedEntities,
+        incidentDate: res.data.incident_date || s.incidentDate,
+        risk: res.data.risk_level ? { level: res.data.risk_level, score: res.data.risk_score } : s.risk,
       }));
       await store.loadComplaints();
       return res.data;
     },
     updateComplaint: async (complaintId, fields) => {
-      await api.patch(`/api/complaint/${complaintId}`, fields);
-      // trigger re-analysis to refresh draft with updated fields
-      try {
-        await api.post('/api/complaint/generate', { complaint_id: complaintId });
-      } catch (e) {}
+      const res = await api.patch(`/api/complaint/${complaintId}`, fields);
+      if (res.data) {
+        useStore.setState((s) => ({
+          incidentDate: res.data.incident_date || s.incidentDate,
+          complaintText: res.data.complaint_text || s.complaintText,
+          timeline: res.data.timeline || s.timeline,
+          risk: res.data.risk_level ? { level: res.data.risk_level, score: res.data.risk_score } : s.risk,
+        }));
+      }
       await store.loadComplaints();
+      return res.data;
     },
     fetchMessages: async (complaintId) => {
       if (complaintId) {
